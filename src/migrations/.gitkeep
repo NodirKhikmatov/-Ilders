@@ -1,0 +1,2 @@
+# Placeholder for TypeORM migrations.
+# Generate with: npm run migration:generate -- src/migrations/InitialSchema

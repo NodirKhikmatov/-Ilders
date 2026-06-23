@@ -70,6 +70,7 @@ This guarantees:
 * PostgreSQL
 * TypeORM
 * Jest
+* Swagger / OpenAPI (interactive API docs at `/api`)
 
 PostgreSQL was selected because financial settlement systems require ACID transactions, unique constraints and strong consistency guarantees.
 
@@ -80,13 +81,49 @@ PostgreSQL was selected because financial settlement systems require ACID transa
 ### Prerequisites
 
 * Node.js 18+
-* PostgreSQL 14+
+* Docker + Docker Compose (recommended — starts PostgreSQL with one command)
+* Or a local PostgreSQL 14+ instance if you prefer not to use Docker
 
-### Installation
+### Quick Start (recommended)
+
+From a clean checkout, the whole stack comes up in three commands:
 
 ```bash
-npm install
-cp .env.example .env
+npm install                 # install dependencies
+cp .env.example .env        # create local env (defaults work out of the box)
+docker compose up -d        # start PostgreSQL (db is auto-created)
+npm run start:dev           # start the API on http://localhost:3000
+```
+
+`docker compose up -d` launches a PostgreSQL 16 container and **automatically
+creates the `settlement_ledger` database** (via `POSTGRES_DB`), so no manual
+database setup is required. The schema itself is created automatically on
+startup (`synchronize` is enabled in development).
+
+Once the server is up, interactive **Swagger / OpenAPI docs** are available at
+**http://localhost:3000/api** (raw spec at `/api-json`). You can try every
+endpoint directly from the browser, which is the quickest way to verify the
+API works.
+
+The host port is taken from `DB_PORT` in your `.env` (default `5432`). If that
+port is already in use on your machine, change `DB_PORT` (e.g. `5435`) — it is
+applied to both the container and the app.
+
+To stop and remove the database (including its data):
+
+```bash
+docker compose down -v
+```
+
+### Without Docker
+
+If you already run PostgreSQL locally, create the database once and point
+`.env` at it:
+
+```bash
+createdb settlement_ledger
+# edit .env so DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD match your instance
+npm run start:dev
 ```
 
 ### Environment Variables
@@ -94,49 +131,108 @@ cp .env.example .env
 | Variable | Description |
 |---|---|
 | `DB_HOST` | PostgreSQL host |
-| `DB_PORT` | PostgreSQL port |
+| `DB_PORT` | PostgreSQL port (used by both the app and `docker-compose`) |
 | `DB_USERNAME` | Database user |
 | `DB_PASSWORD` | Database password |
 | `DB_NAME` | Database name |
 | `PORT` | HTTP server port (default `3000`) |
 
-### Run Tests
+---
+
+## Running the Tests
 
 ```bash
 npm test
 ```
 
-### Run Development Server
+The test suite runs **without a database** (repositories and the data source are
+mocked), so it needs no Docker or PostgreSQL — just `npm install && npm test`.
+
+It contains **35 tests across 6 suites** and focuses on the graded core:
+
+* **Correctness / rounding** (`settlement-calculator.service.spec.ts`) —
+  asserts the invariant `sum(allocations) === revenue` for **every** integer
+  revenue from 0 to 500, plus targeted edge cases (0, 1, the 101 KRW case, etc.)
+  and verifies the deterministic Largest-Remainder tie-break order.
+* **Concurrency / idempotency** (`settlements.service.spec.ts`) — verifies the
+  duplicate-key fast path, the unique-violation (`23505`) recovery on a fresh
+  connection, and that events are claimed exactly once.
+* **Auditability** (`audit.service.spec.ts`) — verifies the immutable input
+  snapshot (event ids + split config) is recorded.
+* Controller specs wire the HTTP layer to the services.
+
+---
+
+## End-to-End Smoke Test — How to Verify Each API
+
+With the server running (`docker compose up -d && npm run start:dev`), you can
+exercise all four APIs and confirm everything works.
+
+The fastest way is the **Swagger UI at http://localhost:3000/api** — every
+endpoint has an example body filled in, so you can click "Try it out" and run
+the full flow from the browser. The equivalent `curl` commands are below. The
+example uses **101 KRW**, the intentional rounding case from the task
+(40.40 / 15.15 / 45.45), so you can see the leftover 1 KRW handled correctly.
+
+**1. Record a play event** — `POST /play-events`
 
 ```bash
-npm run start:dev
+curl -X POST http://localhost:3000/play-events \
+  -H "Content-Type: application/json" \
+  -d '{"songId":"song-1","storeId":"store-1","playedAt":"2026-04-10T12:00:00.000Z","unitPrice":101}'
 ```
 
-### Example Requests
+Expect `HTTP 201` and a JSON body with a generated `id` and `settledBatchId: null`.
 
-**Execute settlement**
+**2. Execute settlement** — `POST /settlements`
 
 ```bash
 curl -X POST http://localhost:3000/settlements \
   -H "Content-Type: application/json" \
-  -d '{
-    "periodStart": "2026-01-01T00:00:00.000Z",
-    "periodEnd": "2026-01-31T23:59:59.999Z",
-    "idempotencyKey": "settlement-jan-2026"
-  }'
+  -d '{"periodStart":"2026-04-01T00:00:00.000Z","periodEnd":"2026-04-30T23:59:59.999Z","idempotencyKey":"apr-2026"}'
 ```
 
-**Get settlement**
+Returns the settlement `id` and the per-party allocations
+(Creator `40`, CMO `15`, Platform `46`). **Note the settlement `id`** for the
+next steps.
+
+**2b. Prove idempotency / no double settlement** — call the exact same request
+again with the **same `idempotencyKey`**:
 
 ```bash
-curl http://localhost:3000/settlements/{settlementId}
+curl -X POST http://localhost:3000/settlements \
+  -H "Content-Type: application/json" \
+  -d '{"periodStart":"2026-04-01T00:00:00.000Z","periodEnd":"2026-04-30T23:59:59.999Z","idempotencyKey":"apr-2026"}'
 ```
 
-**Get audit history**
+It returns the **same settlement `id`** and the same `totalRevenue` — no second
+settlement is created and the events are not counted twice.
+
+**3. Get the settlement result** — `GET /settlements/:id`
 
 ```bash
-curl http://localhost:3000/audit/settlements/{settlementId}
+curl http://localhost:3000/settlements/<settlementId>
 ```
+
+This is the proof of correctness. Look for:
+
+* `allocationTotal` === `totalRevenue` (here `101`)
+* `"matchesOriginalRevenue": true`  ← the reconciliation check
+* `partyTotals`: Creator `40`, CMO `15`, Platform `46` (sum = `101`)
+
+**4. Get the audit log** — `GET /audit/settlements/:settlementId`
+
+```bash
+curl http://localhost:3000/audit/settlements/<settlementId>
+```
+
+Returns the immutable input snapshot used for the calculation: the exact
+`playEventIds`, `playEventCount`, `totalRevenue`, the period, and the
+`revenueSplitBasisPoints` config — enough to independently recompute and verify
+the settlement later.
+
+> Tip: pipe any response through `| python3 -m json.tool` (or `| jq`) for
+> readable output.
 
 ---
 
@@ -377,6 +473,7 @@ AI was used for:
 * project scaffolding
 * boilerplate generation
 * test generation
+* Swagger/OpenAPI annotations and the `docker-compose` setup
 
 Manually reviewed and validated:
 
@@ -398,6 +495,8 @@ Implemented in this round:
 * play-event claim locking (`FOR UPDATE SKIP LOCKED`) to prevent double-settlement
 * aborted-transaction-safe idempotency recovery
 * reproducible audit input snapshot (event ids + split config)
+* OpenAPI / Swagger docs at `/api` and a one-command PostgreSQL setup via
+  `docker-compose`
 
 Given additional time, I would add:
 
@@ -407,4 +506,4 @@ Given additional time, I would add:
   tests can only approximate with mocks
 * settlement reversal/versioning (append-only correction batches)
 * reconciliation reporting and an outbox pattern for downstream payouts
-* OpenAPI documentation and Docker deployment
+* full app containerization (Dockerfile) for production deployment

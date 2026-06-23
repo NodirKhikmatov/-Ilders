@@ -6,7 +6,7 @@ import {
   Post,
   Body,
 } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ExecuteSettlementDto } from './dto/settlement.dto';
 import { SettlementQueryResponseDto } from './dto/settlement-query.dto';
 import { SettlementsService } from './settlements.service';
@@ -36,6 +36,12 @@ export class SettlementsController {
   @Get(':id')
   @ApiOperation({
     summary: 'Retrieve a settlement result with the reconciliation check',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    example: 'e711a661-1ba8-489b-9e93-fcd762265eb7',
+    description: 'Settlement UUID returned by POST /settlements',
   })
   @ApiResponse({ status: 200, type: SettlementQueryResponseDto })
   getById(

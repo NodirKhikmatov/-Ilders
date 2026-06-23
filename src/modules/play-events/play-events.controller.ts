@@ -6,7 +6,7 @@ import {
   ParseUUIDPipe,
   Post,
 } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreatePlayEventDto } from './dto/play-event.dto';
 import { PlayEvent } from './entities/play-event.entity';
 import { PlayEventsService } from './play-events.service';
@@ -25,6 +25,12 @@ export class PlayEventsController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Retrieve a single play event by id' })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    example: '398b5181-27f2-420d-85ec-963e7271ac3f',
+    description: 'Play event UUID returned by POST /play-events',
+  })
   findById(
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<PlayEvent | null> {

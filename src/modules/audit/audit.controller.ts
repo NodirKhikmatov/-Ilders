@@ -1,5 +1,5 @@
 import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { SettlementAuditResponseDto } from './dto/settlement-audit.dto';
 import { AuditService } from './audit.service';
 
@@ -12,6 +12,12 @@ export class AuditController {
   @ApiOperation({
     summary:
       'Retrieve the immutable audit log (input snapshot) for a settlement',
+  })
+  @ApiParam({
+    name: 'settlementId',
+    format: 'uuid',
+    example: 'e711a661-1ba8-489b-9e93-fcd762265eb7',
+    description: 'Settlement UUID returned by POST /settlements',
   })
   @ApiResponse({ status: 200, type: SettlementAuditResponseDto })
   getSettlementAuditHistory(
